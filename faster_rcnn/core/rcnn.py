@@ -123,7 +123,7 @@ def get_rcnn_batch(roidb, cfg):
 
 
 def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
-                labels=None, overlaps=None, bbox_targets=None, gt_boxes=None):
+                labels=None, overlaps=None, bbox_targets=None, gt_boxes=None, range_lower=None, range_upper=None):
     """
     generate random sample of ROIs comprising foreground and background examples
     :param rois: all_rois [n, 4]; e2e: [n, 5] with batch_index
@@ -143,7 +143,16 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
         labels = gt_boxes[gt_assignment, 4]
 
     # foreground RoI with FG_THRESH overlap
-    fg_indexes = np.where(overlaps >= cfg.TRAIN.FG_THRESH)[0]
+
+    if range_lower is None:
+        fg_indexes = np.where(overlaps >= cfg.TRAIN.FG_THRESH)[0]
+    else:
+        tmp_w = rois[:, 3] - rois[:, 1] + 1
+        tmp_h = rois[:, 4] - rois[:, 2] + 1
+        tmp_area = np.sqrt(tmp_w * tmp_h)
+        fg_indexes = np.where((overlaps >= cfg.TRAIN.FG_THRESH) & (tmp_area >= range_lower) & (tmp_area <= range_upper) )[0]
+        #print tmp_area[fg_indexes]
+
     # guard against the case when an image has fewer than fg_rois_per_image foreground RoIs
     fg_rois_per_this_image = np.minimum(fg_rois_per_image, fg_indexes.size)
     # Sample foreground regions without replacement
@@ -151,7 +160,11 @@ def sample_rois(rois, fg_rois_per_image, rois_per_image, num_classes, cfg,
         fg_indexes = npr.choice(fg_indexes, size=fg_rois_per_this_image, replace=False)
 
     # Select background RoIs as those within [BG_THRESH_LO, BG_THRESH_HI)
-    bg_indexes = np.where((overlaps < cfg.TRAIN.BG_THRESH_HI) & (overlaps >= cfg.TRAIN.BG_THRESH_LO))[0]
+    if range_lower is None:
+        bg_indexes = np.where((overlaps < cfg.TRAIN.BG_THRESH_HI) & (overlaps >= cfg.TRAIN.BG_THRESH_LO))[0]
+    else:
+        bg_indexes = np.where((overlaps < cfg.TRAIN.BG_THRESH_HI) & (overlaps >= cfg.TRAIN.BG_THRESH_LO) & (tmp_area >= range_lower) & (tmp_area <= range_upper))[0]
+
     # Compute number of background RoIs to take from this image (guarding against there being fewer than desired)
     bg_rois_per_this_image = rois_per_image - fg_rois_per_this_image
     bg_rois_per_this_image = np.minimum(bg_rois_per_this_image, bg_indexes.size)
