@@ -128,44 +128,18 @@ class resnet_v1_101_rcnn_trident_conv4(Symbol):
                     x = mx.sym.Activation(name="trident%d_res%db%d_relu"%(j+1, stage, i), data=x, act_type='relu')
                     tmp_x.append(x)
                 group_x = tmp_x
+            group_x = mx.sym.Concat(*group_x, dim=0)
+
             return group_x
 
-    def get_rpn_var(self):
-        names = [
-            "rpn_conv_3x3_weight",
-            "rpn_conv_3x3_bias",
-            "rpn_cls_score_weight",
-            "rpn_cls_score_bias",
-            "rpn_bbox_pred_weight",
-            "rpn_bbox_pred_bias"
-        ]
-
-        var = {}
-        for name in names:
-            var[name] = mx.sym.Variable(name=name)
-        return var
-
-    #def get_rpn(self, conv_feat, num_anchors, dilate, name, var):
-    #    rpn_conv = mx.sym.Convolution(
-    #        data=conv_feat, kernel=(3, 3), pad=(dilate, dilate), dilate=(dilate, dilate),  num_filter=512, name="%s_rpn_conv_3x3"%name, weight=var["rpn_conv_3x3_weight"], bias=var["rpn_conv_3x3_bias"])
-    #    rpn_relu = mx.sym.Activation(data=rpn_conv, act_type="relu", name="%s_rpn_relu"%name)
-    #    rpn_cls_score = mx.sym.Convolution(
-    #        data=rpn_relu, kernel=(1, 1), pad=(0, 0), num_filter=2 * num_anchors, name="%s_rpn_cls_score"%name, weight=var["rpn_cls_score_weight"], bias=var["rpn_cls_score_bias"])
-    #    rpn_bbox_pred = mx.sym.Convolution(
-    #        data=rpn_relu, kernel=(1, 1), pad=(0, 0), num_filter=4 * num_anchors, name="%s_rpn_bbox_pred"%name, weight=var["rpn_bbox_pred_weight"], bias=var["rpn_bbox_pred_bias"])
-    #    return rpn_cls_score, rpn_bbox_pred
-
-    def get_rpn(self, conv_feat, num_anchors, dilate, name):
+    def get_rpn(self, conv_feat, num_anchors):
         rpn_conv = mx.sym.Convolution(
-            data=conv_feat, kernel=(3, 3), pad=(dilate, dilate), dilate=(dilate, dilate),  num_filter=512, name="%srpn_conv_3x3"%name)
-        rpn_relu = mx.sym.Activation(data=rpn_conv, act_type="relu", name="%srpn_relu"%name)
+            data=conv_feat, kernel=(3, 3), pad=(1, 1), num_filter=512, name="rpn_conv_3x3")
+        rpn_relu = mx.sym.Activation(data=rpn_conv, act_type="relu", name="rpn_relu")
         rpn_cls_score = mx.sym.Convolution(
-            data=rpn_relu, kernel=(1, 1), pad=(0, 0), num_filter=2 * num_anchors, name="%srpn_cls_score"%name)
+            data=rpn_relu, kernel=(1, 1), pad=(0, 0), num_filter=2 * num_anchors, name="rpn_cls_score")
         rpn_bbox_pred = mx.sym.Convolution(
-            data=rpn_relu, kernel=(1, 1), pad=(0, 0), num_filter=4 * num_anchors, name="%srpn_bbox_pred"%name)
-
-        #rpn_cls_score = mx.sym.Reshape(data=rpn_cls_score, shape=(3, 2*num_anchors/3, 0, 0))
-        #rpn_bbox_pred = mx.sym.Reshape(data=rpn_bbox_pred, shape=(3, 4*num_anchors/3, 0, 0))
+            data=rpn_relu, kernel=(1, 1), pad=(0, 0), num_filter=4 * num_anchors, name="rpn_bbox_pred")
 
         return rpn_cls_score, rpn_bbox_pred
 
@@ -186,14 +160,20 @@ class resnet_v1_101_rcnn_trident_conv4(Symbol):
             rpn_label = mx.sym.Variable(name='label')
             rpn_bbox_target = mx.sym.Variable(name='bbox_target')
             rpn_bbox_weight = mx.sym.Variable(name='bbox_weight')
+
+            valid_ranges = mx.sym.Variable(name="valid_ranges")
+            valid_ranges = mx.sym.Reshape(valid_ranges, (-1, 2))
+
+            im_info = mx.sym.Concat(im_info, im_info, im_info, dim=0)
+            gt_boxes = mx.sym.Concat(gt_boxes, gt_boxes, gt_boxes, dim=0)
         else:
             data = mx.sym.Variable(name="data")
             im_info = mx.sym.Variable(name="im_info")
 
+
+
         # shared convolutional layers
         conv1 = self.get_resnet_v1_conv1(data)
-        #self.units = (3, 4, 23, 3) # use for 101
-        #self.filter_list = [256, 512, 1024, 2048]
 
         conv2_var = self.get_resnet_v1_conv_var(2, self.units[0])
         conv3_var = self.get_resnet_v1_conv_var(3, self.units[1])
@@ -203,32 +183,17 @@ class resnet_v1_101_rcnn_trident_conv4(Symbol):
 
         conv2 = self.get_resnet_v1_conv(conv1, 2, self.units[0], self.filter_list[0], conv2_var, stride=1)
         conv3 = self.get_resnet_v1_conv(conv2, 3, self.units[1], self.filter_list[1], conv3_var)
-        conv4 = self.get_resnet_v1_conv(conv3, 4, self.units[2], self.filter_list[2], conv4_var, trident=True, trident_blocks=7)
+        conv4 = self.get_resnet_v1_conv(conv3, 4, self.units[2], self.filter_list[2], conv4_var, trident=True, trident_blocks=10)
         
-        conv5_trident1 = self.get_resnet_v1_conv(conv4[0], 5, self.units[3], self.filter_list[3], conv5_var, dilate=1, stride=1)
-        conv5_trident2 = self.get_resnet_v1_conv(conv4[1], 5, self.units[3], self.filter_list[3], conv5_var, dilate=2, stride=1)
-        conv5_trident3 = self.get_resnet_v1_conv(conv4[1], 5, self.units[3], self.filter_list[3], conv5_var, dilate=3, stride=1)
+        conv5 = self.get_resnet_v1_conv(conv4, 5, self.units[3], self.filter_list[3], conv5_var, dilate=2, stride=1)
 
-        #rpn_var = self.get_rpn_var()
-        #rpn_cls_score_trident1, rpn_bbox_pred_trident1 = self.get_rpn(conv4[0], num_anchors/3, 1, "trident1", rpn_var)
-        #rpn_cls_score_trident2, rpn_bbox_pred_trident2 = self.get_rpn(conv4[1], num_anchors/3, 2, "trident2", rpn_var)
-        #rpn_cls_score_trident3, rpn_bbox_pred_trident3 = self.get_rpn(conv4[2], num_anchors/3, 3, "trident3", rpn_var)
-        #rpn_cls_score_trident1, rpn_bbox_pred_trident1 = self.get_rpn(conv4[0], num_anchors/3, 1, "trident1") # 1 * 3 * w * h   1 * 12 * w * h
-        #rpn_cls_score_trident2, rpn_bbox_pred_trident2 = self.get_rpn(conv4[1], num_anchors/3, 1, "trident2")
-        #rpn_cls_score_trident3, rpn_bbox_pred_trident3 = self.get_rpn(conv4[2], num_anchors/3, 1, "trident3")
-
-
-
-        #rpn_cls_score = mx.sym.concat(rpn_cls_score_trident1, rpn_cls_score_trident2, rpn_cls_score_trident3, dim=1, name="rpn_cls_score_ori")
-        #rpn_bbox_pred = mx.sym.concat(rpn_bbox_pred_trident1, rpn_bbox_pred_trident2, rpn_bbox_pred_trident3, dim=1, name="rpn_bbox_pred_ori")
-
-        #rpn_cls_score = mx.sym.Reshape(data=rpn_cls_score, shape=(1, -1, 0, 0), name="rpn_cls_score")
-        #rpn_bbox_pred = mx.sym.Reshape(data=rpn_bbox_pred, shape=(1, -1, 0, 0), name="rpn_bbox_pred")
-        rpn_cls_score, rpn_bbox_pred = self.get_rpn(conv4[0], num_anchors, 1, "")
+        rpn_cls_score, rpn_bbox_pred = self.get_rpn(conv4, num_anchors)
         
         if is_train:
             rpn_cls_score_reshape = mx.sym.Reshape(
                 data=rpn_cls_score, shape=(0, 2, -1, 0), name="rpn_cls_score_reshape")
+
+
             rpn_cls_prob = mx.sym.SoftmaxOutput(data=rpn_cls_score_reshape, label=rpn_label, multi_output=True,
                                                    normalization='valid', use_ignore=True, ignore_label=-1, name="rpn_cls_prob")
 
@@ -241,46 +206,38 @@ class resnet_v1_101_rcnn_trident_conv4(Symbol):
                 data=rpn_cls_score_reshape, mode="channel", name="rpn_cls_act")
             rpn_cls_act_reshape = mx.sym.Reshape(
                 data=rpn_cls_act, shape=(0, 2 * num_anchors, -1, 0), name='rpn_cls_act_reshape')
-            if cfg.TRAIN.CXX_PROPOSAL:
-                rois = mx.contrib.sym.Proposal(
-                    cls_prob=rpn_cls_act_reshape, bbox_pred=rpn_bbox_pred, im_info=im_info, name='rois',
-                    feature_stride=cfg.network.RPN_FEAT_STRIDE, scales=tuple(cfg.network.ANCHOR_SCALES),
-                    ratios=tuple(cfg.network.ANCHOR_RATIOS),
-                    rpn_pre_nms_top_n=cfg.TRAIN.RPN_PRE_NMS_TOP_N, rpn_post_nms_top_n=cfg.TRAIN.RPN_POST_NMS_TOP_N,
-                    threshold=cfg.TRAIN.RPN_NMS_THRESH, rpn_min_size=cfg.TRAIN.RPN_MIN_SIZE)
-            else:
-                rois = mx.sym.Custom(
-                    cls_prob=rpn_cls_act_reshape, bbox_pred=rpn_bbox_pred, im_info=im_info, name='rois',
-                    op_type='proposal', feat_stride=cfg.network.RPN_FEAT_STRIDE,
-                    scales=tuple(cfg.network.ANCHOR_SCALES), ratios=tuple(cfg.network.ANCHOR_RATIOS),
-                    rpn_pre_nms_top_n=cfg.TRAIN.RPN_PRE_NMS_TOP_N, rpn_post_nms_top_n=cfg.TRAIN.RPN_POST_NMS_TOP_N,
-                    threshold=cfg.TRAIN.RPN_NMS_THRESH, rpn_min_size=cfg.TRAIN.RPN_MIN_SIZE)
-            # ROI proposal target
-            gt_boxes_reshape = mx.sym.Reshape(data=gt_boxes, shape=(-1, 5), name='gt_boxes_reshape')
-            rois1, label1, bbox_target1, bbox_weight1 = mx.sym.Custom(rois=rois, gt_boxes=gt_boxes_reshape,
-                                                                  op_type='proposal_target_trident',
-                                                                  num_classes=num_reg_classes,
-                                                                  batch_images=cfg.TRAIN.BATCH_IMAGES,
-                                                                  batch_rois=cfg.TRAIN.BATCH_ROIS,
-                                                                  cfg=cPickle.dumps(cfg),
-                                                                  fg_fraction=cfg.TRAIN.FG_FRACTION,
-                                                                  range_lower=0, range_upper=99999)
-            rois2, label2, bbox_target2, bbox_weight2 = mx.sym.Custom(rois=rois, gt_boxes=gt_boxes_reshape,
-                                                                  op_type='proposal_target_trident',
-                                                                  num_classes=num_reg_classes,
-                                                                  batch_images=cfg.TRAIN.BATCH_IMAGES,
-                                                                  batch_rois=cfg.TRAIN.BATCH_ROIS,
-                                                                  cfg=cPickle.dumps(cfg),
-                                                                  fg_fraction=cfg.TRAIN.FG_FRACTION,
-                                                                  range_lower=0, range_upper=99999)
-            rois3, label3, bbox_target3, bbox_weight3 = mx.sym.Custom(rois=rois, gt_boxes=gt_boxes_reshape,
-                                                                  op_type='proposal_target_trident',
-                                                                  num_classes=num_reg_classes,
-                                                                  batch_images=cfg.TRAIN.BATCH_IMAGES,
-                                                                  batch_rois=cfg.TRAIN.BATCH_ROIS,
-                                                                  cfg=cPickle.dumps(cfg),
-                                                                  fg_fraction=cfg.TRAIN.FG_FRACTION,
-                                                                  range_lower=0, range_upper=99999)
+
+
+            proposal = mx.sym.contrib.Proposal_v2(
+                cls_prob=rpn_cls_act_reshape, bbox_pred=rpn_bbox_pred, im_info=im_info, name='rois',
+                feature_stride=cfg.network.RPN_FEAT_STRIDE, scales=tuple(cfg.network.ANCHOR_SCALES),
+                ratios=tuple(cfg.network.ANCHOR_RATIOS),
+                rpn_pre_nms_top_n=cfg.TRAIN.RPN_PRE_NMS_TOP_N, rpn_post_nms_top_n=cfg.TRAIN.RPN_POST_NMS_TOP_N,
+                threshold=cfg.TRAIN.RPN_NMS_THRESH, rpn_min_size=cfg.TRAIN.RPN_MIN_SIZE, valid_ranges=valid_ranges, iou_loss=False, filter_scales=True)
+
+            rois, label, bbox_target, bbox_weight = mx.sym.ProposalTarget_v2(
+                                                                   rois=proposal,
+                                                                   gt_boxes=gt_boxes,
+                                                                   valid_ranges=valid_ranges,
+                                                                   num_classes=num_reg_classes,
+                                                                   class_agnostic=cfg.CLASS_AGNOSTIC,
+                                                                   batch_images=cfg.TRAIN.BATCH_IMAGES * 3,
+                                                                   proposal_without_gt=True,
+                                                                   image_rois=cfg.TRAIN.BATCH_ROIS,
+                                                                   fg_fraction=cfg.TRAIN.FG_FRACTION,
+                                                                   fg_thresh=cfg.TRAIN.FG_THRESH,
+                                                                   bg_thresh_hi=cfg.TRAIN.BG_THRESH_HI,
+                                                                   bg_thresh_lo=cfg.TRAIN.BG_THRESH_LO,
+                                                                   bbox_weight=tuple(cfg.TRAIN.BBOX_WEIGHTS),
+                                                                   bbox_mean=cfg.TRAIN.BBOX_MEANS,
+                                                                   bbox_std=cfg.TRAIN.BBOX_STDS,
+                                                                   filter_scales=True,
+                                                                   name="proposal_target"
+                                                                   )
+
+            label = mx.sym.Reshape(label, (-3, -2))
+            bbox_target = mx.sym.Reshape(bbox_target, (-3, -2))
+            bbox_weight = mx.sym.Reshape(bbox_weight, (-3, -2))
 
         else:
             # ROI Proposal
@@ -305,41 +262,11 @@ class resnet_v1_101_rcnn_trident_conv4(Symbol):
                     rpn_pre_nms_top_n=cfg.TEST.RPN_PRE_NMS_TOP_N, rpn_post_nms_top_n=cfg.TEST.RPN_POST_NMS_TOP_N,
                     threshold=cfg.TEST.RPN_NMS_THRESH, rpn_min_size=cfg.TEST.RPN_MIN_SIZE)
 
-        conv_new_1_weight = mx.sym.Variable(name="conv_new_1_weight")
-        conv_new_1_bias = mx.sym.Variable(name="conv_new_1_bias")
+        conv_new_1 = mx.sym.Convolution(data=conv5, kernel=(1, 1), num_filter=256, name="conv_new_1")
+        conv_new_1_relu = mx.sym.Activation(data=conv_new_1, act_type='relu', name='conv_new_1_relu')
 
-        trident1_conv_new_1 = mx.sym.Convolution(data=conv5_trident1, kernel=(1, 1), num_filter=256, name="trident1_conv_new_1", weight=conv_new_1_weight, bias=conv_new_1_bias)
-        trident1_conv_new_1_relu = mx.sym.Activation(data=trident1_conv_new_1, act_type='relu', name='trident1_conv_new_1_relu')
-        trident2_conv_new_1 = mx.sym.Convolution(data=conv5_trident2, kernel=(1, 1), num_filter=256, name="trident2_conv_new_1", weight=conv_new_1_weight, bias=conv_new_1_bias)
-        trident2_conv_new_1_relu = mx.sym.Activation(data=trident2_conv_new_1, act_type='relu', name='trident2_conv_new_1_relu')
-        trident3_conv_new_1 = mx.sym.Convolution(data=conv5_trident3, kernel=(1, 1), num_filter=256, name="trident3_conv_new_1", weight=conv_new_1_weight, bias=conv_new_1_bias)
-        trident3_conv_new_1_relu = mx.sym.Activation(data=trident3_conv_new_1, act_type='relu', name='trident3_conv_new_1_relu')
-
-
-        if is_train:
-            roi_pool1 = mx.symbol.ROIPooling(
-                name='roi_pool1', data=trident1_conv_new_1_relu, rois=rois1, pooled_size=(7, 7), spatial_scale=0.0625)
-            roi_pool2 = mx.symbol.ROIPooling(
-                name='roi_pool2', data=trident2_conv_new_1_relu, rois=rois2, pooled_size=(7, 7), spatial_scale=0.0625)
-            roi_pool3 = mx.symbol.ROIPooling(
-                name='roi_pool3', data=trident3_conv_new_1_relu, rois=rois3, pooled_size=(7, 7), spatial_scale=0.0625)
-
-            roi_pool = mx.sym.concat(roi_pool1, roi_pool2, roi_pool3, dim=0)
-            label = mx.symbol.concat(label1, label2, label3, dim=0)
-            bbox_target = mx.symbol.concat(bbox_target1, bbox_target2, bbox_target3, dim=0)
-            bbox_weight = mx.symbol.concat(bbox_weight1, bbox_weight2, bbox_weight3, dim=0)
-
-        else:
-            roi_pool1 = mx.symbol.ROIPooling(
-                name='roi_pool1', data=trident1_conv_new_1_relu, rois=rois, pooled_size=(7, 7), spatial_scale=0.0625)
-            roi_pool2 = mx.symbol.ROIPooling(
-                name='roi_pool2', data=trident2_conv_new_1_relu, rois=rois, pooled_size=(7, 7), spatial_scale=0.0625)
-            roi_pool3 = mx.symbol.ROIPooling(
-                name='roi_pool3', data=trident3_conv_new_1_relu, rois=rois, pooled_size=(7, 7), spatial_scale=0.0625)
-
-            roi_pool = mx.sym.concat(roi_pool1, roi_pool2, roi_pool3, dim=0)
-            #roi_pool = roi_pool2
-
+        roi_pool = mx.sym.contrib.ROIAlign_v2(name="roi_pool", data=conv_new_1_relu, rois=rois, pooled_size=(7, 7), spatial_scale=0.0625)
+        roi_pool = mx.sym.Reshape(roi_pool, (-3, -2))
 
         # 2 fc
         fc_new_1 = mx.symbol.FullyConnected(name='fc_new_1', data=roi_pool, num_hidden=1024)
@@ -372,6 +299,7 @@ class resnet_v1_101_rcnn_trident_conv4(Symbol):
                                                             data=(bbox_pred - bbox_target))
                 bbox_loss = mx.sym.MakeLoss(name='bbox_loss', data=bbox_loss_, grad_scale=1.0 / cfg.TRAIN.BATCH_ROIS)
                 rcnn_label = label
+
 
             # reshape output
             rcnn_label = mx.sym.Reshape(data=rcnn_label, shape=(cfg.TRAIN.BATCH_IMAGES, -1), name='label_reshape')
@@ -413,34 +341,6 @@ class resnet_v1_101_rcnn_trident_conv4(Symbol):
         arg_params['rpn_bbox_pred_weight'] = mx.random.normal(0, 0.01,
                                                               shape=self.arg_shape_dict['rpn_bbox_pred_weight'])
         arg_params['rpn_bbox_pred_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['rpn_bbox_pred_bias'])
-
-
-        #arg_params['trident1_rpn_conv_3x3_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['trident1_rpn_conv_3x3_weight'])
-        #arg_params['trident1_rpn_conv_3x3_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident1_rpn_conv_3x3_bias'])
-        #arg_params['trident1_rpn_cls_score_weight'] = mx.random.normal(0, 0.01,
-        #                                                      shape=self.arg_shape_dict['trident1_rpn_cls_score_weight'])
-        #arg_params['trident1_rpn_cls_score_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident1_rpn_cls_score_bias'])
-        #arg_params['trident1_rpn_bbox_pred_weight'] = mx.random.normal(0, 0.01,
-        #                                                      shape=self.arg_shape_dict['trident1_rpn_bbox_pred_weight'])
-        #arg_params['trident1_rpn_bbox_pred_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident1_rpn_bbox_pred_bias'])
-
-        #arg_params['trident2_rpn_conv_3x3_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['trident2_rpn_conv_3x3_weight'])
-        #arg_params['trident2_rpn_conv_3x3_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident2_rpn_conv_3x3_bias'])
-        #arg_params['trident2_rpn_cls_score_weight'] = mx.random.normal(0, 0.01,
-        #                                                      shape=self.arg_shape_dict['trident2_rpn_cls_score_weight'])
-        #arg_params['trident2_rpn_cls_score_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident2_rpn_cls_score_bias'])
-        #arg_params['trident2_rpn_bbox_pred_weight'] = mx.random.normal(0, 0.01,
-        #                                                      shape=self.arg_shape_dict['trident2_rpn_bbox_pred_weight'])
-        #arg_params['trident2_rpn_bbox_pred_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident2_rpn_bbox_pred_bias'])
-
-        #arg_params['trident3_rpn_conv_3x3_weight'] = mx.random.normal(0, 0.01, shape=self.arg_shape_dict['trident3_rpn_conv_3x3_weight'])
-        #arg_params['trident3_rpn_conv_3x3_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident3_rpn_conv_3x3_bias'])
-        #arg_params['trident3_rpn_cls_score_weight'] = mx.random.normal(0, 0.01,
-        #                                                      shape=self.arg_shape_dict['trident3_rpn_cls_score_weight'])
-        #arg_params['trident3_rpn_cls_score_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident3_rpn_cls_score_bias'])
-        #arg_params['trident3_rpn_bbox_pred_weight'] = mx.random.normal(0, 0.01,
-        #                                                      shape=self.arg_shape_dict['trident3_rpn_bbox_pred_weight'])
-        #arg_params['trident3_rpn_bbox_pred_bias'] = mx.nd.zeros(shape=self.arg_shape_dict['trident3_rpn_bbox_pred_bias'])
 
     def init_weight(self, cfg, arg_params, aux_params):
         self.init_weight_rpn(cfg, arg_params, aux_params)

@@ -76,7 +76,7 @@ def get_rpn_batch(roidb, cfg):
 
 
 def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
-                  scales=(8, 16, 32), ratios=(0.5, 1, 2), allowed_border=0):
+                  scales=(8, 16, 32), ratios=(0.5, 1, 2), allowed_border=0, valid_ranges=None, invalid_anchor_threshold=0.3):
     """
     assign ground truth boxes to anchor positions
     :param feat_shape: infer output shape
@@ -111,17 +111,6 @@ def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
     num_anchors = base_anchors.shape[0]
     feat_height, feat_width = feat_shape[-2:]
 
-    if DEBUG:
-        print 'anchors:'
-        print base_anchors
-        print 'anchor shapes:'
-        print np.hstack((base_anchors[:, 2::4] - base_anchors[:, 0::4],
-                         base_anchors[:, 3::4] - base_anchors[:, 1::4]))
-        print 'im_info', im_info
-        print 'height', feat_height, 'width', feat_width
-        print 'gt_boxes shape', gt_boxes.shape
-        print 'gt_boxes', gt_boxes
-
     # 1. generate proposals from bbox deltas and shifted anchors
     shift_x = np.arange(0, feat_width) * feat_stride
     shift_y = np.arange(0, feat_height) * feat_stride
@@ -142,14 +131,9 @@ def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
                            (all_anchors[:, 1] >= -allowed_border) &
                            (all_anchors[:, 2] < im_info[1] + allowed_border) &
                            (all_anchors[:, 3] < im_info[0] + allowed_border))[0]
-    if DEBUG:
-        print 'total_anchors', total_anchors
-        print 'inds_inside', len(inds_inside)
 
     # keep only inside anchors
     anchors = all_anchors[inds_inside, :]
-    if DEBUG:
-        print 'anchors shape', anchors.shape
 
     # label: 1 is positive, 0 is negative, -1 is dont care
     labels = np.empty((len(inds_inside),), dtype=np.float32)
@@ -181,65 +165,108 @@ def assign_anchor(feat_shape, gt_boxes, im_info, cfg, feat_stride=16,
     else:
         labels[:] = 0
 
-    # subsample positive labels if we have too many
-    num_fg = int(cfg.TRAIN.RPN_FG_FRACTION * cfg.TRAIN.RPN_BATCH_SIZE)
-    fg_inds = np.where(labels == 1)[0]
-    if len(fg_inds) > num_fg:
-        disable_inds = npr.choice(fg_inds, size=(len(fg_inds) - num_fg), replace=False)
-        if DEBUG:
-            disable_inds = fg_inds[:(len(fg_inds) - num_fg)]
-        labels[disable_inds] = -1
 
-    # subsample negative labels if we have too many
-    num_bg = cfg.TRAIN.RPN_BATCH_SIZE - np.sum(labels == 1)
-    bg_inds = np.where(labels == 0)[0]
-    if len(bg_inds) > num_bg:
-        disable_inds = npr.choice(bg_inds, size=(len(bg_inds) - num_bg), replace=False)
-        if DEBUG:
-            disable_inds = bg_inds[:(len(bg_inds) - num_bg)]
-        labels[disable_inds] = -1
+    if valid_ranges is None:
+        # subsample positive labels if we have too many
+        num_fg = int(cfg.TRAIN.RPN_FG_FRACTION * cfg.TRAIN.RPN_BATCH_SIZE)
+        fg_inds = np.where(labels == 1)[0]
+        if len(fg_inds) > num_fg:
+            disable_inds = npr.choice(fg_inds, size=(len(fg_inds) - num_fg), replace=False)
+            labels[disable_inds] = -1
 
-    bbox_targets = np.zeros((len(inds_inside), 4), dtype=np.float32)
-    if gt_boxes.size > 0:
-        bbox_targets[:] = bbox_transform(anchors, gt_boxes[argmax_overlaps, :4])
+        # subsample negative labels if we have too many
+        num_bg = cfg.TRAIN.RPN_BATCH_SIZE - np.sum(labels == 1)
+        bg_inds = np.where(labels == 0)[0]
+        if len(bg_inds) > num_bg:
+            disable_inds = npr.choice(bg_inds, size=(len(bg_inds) - num_bg), replace=False)
+            labels[disable_inds] = -1
 
-    bbox_weights = np.zeros((len(inds_inside), 4), dtype=np.float32)
-    bbox_weights[labels == 1, :] = np.array(cfg.TRAIN.RPN_BBOX_WEIGHTS)
+        bbox_targets = np.zeros((len(inds_inside), 4), dtype=np.float32)
+        if gt_boxes.size > 0:
+            bbox_targets[:] = bbox_transform(anchors, gt_boxes[argmax_overlaps, :4])
 
-    if DEBUG:
-        _sums = bbox_targets[labels == 1, :].sum(axis=0)
-        _squared_sums = (bbox_targets[labels == 1, :] ** 2).sum(axis=0)
-        _counts = np.sum(labels == 1)
-        means = _sums / (_counts + 1e-14)
-        stds = np.sqrt(_squared_sums / _counts - means ** 2)
-        print 'means', means
-        print 'stdevs', stds
+        bbox_weights = np.zeros((len(inds_inside), 4), dtype=np.float32)
+        bbox_weights[labels == 1, :] = np.array(cfg.TRAIN.RPN_BBOX_WEIGHTS)
 
-    # map up to original set of anchors
-    labels = _unmap(labels, total_anchors, inds_inside, fill=-1)
-    bbox_targets = _unmap(bbox_targets, total_anchors, inds_inside, fill=0)
-    bbox_weights = _unmap(bbox_weights, total_anchors, inds_inside, fill=0)
+        # map up to original set of anchors
+        labels = _unmap(labels, total_anchors, inds_inside, fill=-1)
+        bbox_targets = _unmap(bbox_targets, total_anchors, inds_inside, fill=0)
+        bbox_weights = _unmap(bbox_weights, total_anchors, inds_inside, fill=0)
 
-    if DEBUG:
-        print 'rpn: max max_overlaps', np.max(max_overlaps)
-        print 'rpn: num_positives', np.sum(labels == 1)
-        print 'rpn: num_negatives', np.sum(labels == 0)
-        _fg_sum = np.sum(labels == 1)
-        _bg_sum = np.sum(labels == 0)
-        _count = 1
-        print 'rpn: num_positive avg', _fg_sum / _count
-        print 'rpn: num_negative avg', _bg_sum / _count
+        labels = labels.reshape((1, feat_height, feat_width, A)).transpose(0, 3, 1, 2)
+        labels = labels.reshape((1, A * feat_height * feat_width))
+        bbox_targets = bbox_targets.reshape((1, feat_height, feat_width, A * 4)).transpose(0, 3, 1, 2)
+        bbox_weights = bbox_weights.reshape((1, feat_height, feat_width, A * 4)).transpose((0, 3, 1, 2))
 
-    labels = labels.reshape((1, feat_height, feat_width, A)).transpose(0, 3, 1, 2)
-    labels = labels.reshape((1, A * feat_height * feat_width))
-    bbox_targets = bbox_targets.reshape((1, feat_height, feat_width, A * 4)).transpose(0, 3, 1, 2)
-    bbox_weights = bbox_weights.reshape((1, feat_height, feat_width, A * 4)).transpose((0, 3, 1, 2))
+        label = {'label': labels,
+                 'bbox_target': bbox_targets,
+                 'bbox_weight': bbox_weights}
+        return label
 
-    label = {'label': labels,
-             'bbox_target': bbox_targets,
-             'bbox_weight': bbox_weights}
-    return label
+    else:
+        all_labels, all_bbox_targets, all_bbox_weights = [], [], []
+        for valid_range in valid_ranges:
+            cls_labels = labels.copy()
+            if gt_boxes.size > 0:
+                gt_boxes_sizes = (gt_boxes[:, 3] - gt_boxes[:, 1] + 1.) * (gt_boxes[:, 4] - gt_boxes[:, 2] + 1.)
+                invalid_inds = np.where((gt_boxes_sizes < valid_range[0]**2) | (gt_boxes_sizes > valid_range[1]**2))[0]
+                invalid_gt_boxes = gt_boxes[invalid_inds, :]
+                if len(invalid_inds) > 0:
+                    invalid_overlaps = bbox_overlaps(anchors.astype(np.float), invalid_gt_boxes.astype(np.float))
+                    invalid_argmax_overlaps = invalid_overlaps.argmax(axis=1)
+                    invalid_max_overlaps = invalid_overlaps[np.arange(len(inds_inside)), invalid_argmax_overlaps]
+                    
+                    disable_inds = np.where((invalid_max_overlaps > invalid_anchor_threshold))[0]
+                    cls_labels[disable_inds] = -1
 
+            num_fg = int(cfg.TRAIN.RPN_FG_FRACTION * cfg.TRAIN.RPN_BATCH_SIZE)
+            fg_inds = np.where(cls_labels == 1)[0]
+            if len(fg_inds) > num_fg:
+                disable_inds = npr.choice(fg_inds, size=(len(fg_inds) - num_fg), replace=False)
+                cls_labels[disable_inds] = -1
+
+            # subsample negative labels if we have too many
+            num_bg = cfg.TRAIN.RPN_BATCH_SIZE - np.sum(cls_labels == 1)
+            bg_inds = np.where(cls_labels == 0)[0]
+            if len(bg_inds) > num_bg:
+                disable_inds = npr.choice(bg_inds, size=(len(bg_inds) - num_bg), replace=False)
+                cls_labels[disable_inds] = -1
+
+            bbox_targets = np.zeros((len(inds_inside), 4), dtype=np.float32)
+            if gt_boxes.size > 0:
+                bbox_targets[:] = bbox_transform(anchors, gt_boxes[argmax_overlaps, :4])
+
+            bbox_weights = np.zeros((len(inds_inside), 4), dtype=np.float32)
+            bbox_weights[cls_labels == 1, :] = np.array(cfg.TRAIN.RPN_BBOX_WEIGHTS)
+
+            # map up to original set of anchors
+            cls_labels = _unmap(cls_labels, total_anchors, inds_inside, fill=-1)
+            bbox_targets = _unmap(bbox_targets, total_anchors, inds_inside, fill=0)
+            bbox_weights = _unmap(bbox_weights, total_anchors, inds_inside, fill=0)
+
+            cls_labels = cls_labels.reshape((1, feat_height, feat_width, A)).transpose(0, 3, 1, 2)
+            cls_labels = cls_labels.reshape((1, A * feat_height * feat_width))
+            bbox_targets = bbox_targets.reshape((1, feat_height, feat_width, A * 4)).transpose(0, 3, 1, 2)
+            bbox_weights = bbox_weights.reshape((1, feat_height, feat_width, A * 4)).transpose((0, 3, 1, 2))
+
+            all_labels.append(cls_labels)
+            all_bbox_targets.append(bbox_targets)
+            all_bbox_weights.append(bbox_weights)
+
+        all_labels = np.vstack(all_labels)
+        all_bbox_targets = np.vstack(all_bbox_targets)
+        all_bbox_weights = np.vstack(all_bbox_weights)
+
+        valid_ranges = np.array([[0, 90], [30, 160], [90, -1]], dtype=np.float32).reshape(-1, 2)
+        valid_ranges *= im_info[2]
+        inds = np.where(valid_ranges[:, 1] < 0)[0]
+        valid_ranges[inds, 1] = max(im_info[0], im_info[1])
+
+        label = {'label': all_labels,
+                 'bbox_target': all_bbox_targets,
+                 'bbox_weight': all_bbox_weights,
+                 'valid_ranges': valid_ranges}
+        return label
 
 def assign_pyramid_anchor(feat_shapes, gt_boxes, im_info, cfg, feat_strides=(4, 8, 16, 32, 64),
                           scales=(8,), ratios=(0.5, 1, 2), allowed_border=0, balance_scale_bg=False,):

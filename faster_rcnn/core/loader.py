@@ -289,7 +289,7 @@ class AnchorLoader(mx.io.DataIter):
 
     def __init__(self, feat_sym, roidb, cfg, batch_size=1, shuffle=False, ctx=None, work_load_list=None,
                  feat_stride=16, anchor_scales=(8, 16, 32), anchor_ratios=(0.5, 1, 2), allowed_border=0,
-                 aspect_grouping=False):
+                 aspect_grouping=False, valid_ranges=None):
         """
         This Iter will provide roi data to Fast R-CNN network
         :param feat_sym: to infer shape of assign_output
@@ -319,6 +319,9 @@ class AnchorLoader(mx.io.DataIter):
         self.allowed_border = allowed_border
         self.aspect_grouping = aspect_grouping
 
+        #add trident
+        self.valid_ranges = valid_ranges
+
         # infer properties from roidb
         self.size = len(roidb)
         self.index = np.arange(self.size)
@@ -328,7 +331,11 @@ class AnchorLoader(mx.io.DataIter):
             self.data_name = ['data', 'im_info', 'gt_boxes']
         else:
             self.data_name = ['data']
-        self.label_name = ['label', 'bbox_target', 'bbox_weight']
+
+        if valid_ranges is None:
+            self.label_name = ['label', 'bbox_target', 'bbox_weight']
+        else:
+            self.label_name = ['label', 'bbox_target', 'bbox_weight', 'valid_ranges']
 
         # status variable for synchronization between get_data and get_label
         self.cur = 0
@@ -408,9 +415,10 @@ class AnchorLoader(mx.io.DataIter):
         im_info = [[max_shapes['data'][2], max_shapes['data'][3], 1.0]]
         _, feat_shape, _ = self.feat_sym.infer_shape(**max_shapes)
         label = assign_anchor(feat_shape[0], np.zeros((0, 5)), im_info, self.cfg,
-                              self.feat_stride, self.anchor_scales, self.anchor_ratios, self.allowed_border)
+                              self.feat_stride, self.anchor_scales, self.anchor_ratios, self.allowed_border, self.valid_ranges)
         label = [label[k] for k in self.label_name]
-        label_shape = [(k, tuple([input_batch_size] + list(v.shape[1:]))) for k, v in zip(self.label_name, label)]
+        #label_shape = [(k, tuple([input_batch_size] + list(v.shape[1:]))) for k, v in zip(self.label_name, label)]
+        label_shape = [(k, tuple(list(v.shape))) for k, v in zip(self.label_name, label)]
         return max_data_shape, label_shape
 
     def get_batch(self):
@@ -456,7 +464,8 @@ class AnchorLoader(mx.io.DataIter):
             # assign anchor for label
             label = assign_anchor(feat_shape, label['gt_boxes'], data['im_info'], self.cfg,
                                   self.feat_stride, self.anchor_scales,
-                                  self.anchor_ratios, self.allowed_border)
+                                  self.anchor_ratios, self.allowed_border, self.valid_ranges)
+
             new_label_list.append(label)
 
         all_data = dict()
@@ -506,6 +515,6 @@ class AnchorLoader(mx.io.DataIter):
         # assign anchor for label
         label = assign_anchor(feat_shape, label['gt_boxes'], data['im_info'], self.cfg,
                               self.feat_stride, self.anchor_scales,
-                              self.anchor_ratios, self.allowed_border)
+                              self.anchor_ratios, self.allowed_border, self.valid_ranges)
         return {'data': data, 'label': label}
 

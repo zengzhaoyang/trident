@@ -55,6 +55,7 @@ class ProposalTargetTridentOperator(mx.operator.CustomOp):
 
         # Include ground-truth boxes in the set of candidate rois
         zeros = np.zeros((gt_boxes.shape[0], 1), dtype=gt_boxes.dtype)
+
         all_rois = np.vstack((all_rois, np.hstack((zeros, gt_boxes[:, :-1]))))
         # Sanity check: single batch only
         assert np.all(all_rois[:, 0] == 0), 'Only single item batches are supported'
